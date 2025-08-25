@@ -1,0 +1,10 @@
+# Ignore build outputs
+bin/
+obj/
+.vs/
+*.user
+*.db
+*.log
+
+# MacOS system files
+.DS_Store
