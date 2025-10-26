@@ -265,8 +265,7 @@ namespace EmulatorControl
                 {
                     try
                     {
-                        // Verificar se já está rodando
-                        if (IsProcessRunning(emu.Process))
+                        if (IsProcessRunning(emu.Process, server.Path))
                         {
                             allResults.Add(new { 
                                 server = server.Id, 
@@ -299,6 +298,7 @@ namespace EmulatorControl
                         };
 
                         Process.Start(processInfo);
+                        Console.WriteLine($"✅ {server.Id}/{emu.Name} iniciado");
                         allResults.Add(new { 
                             server = server.Id, 
                             emulator = emu.Name, 
@@ -314,6 +314,7 @@ namespace EmulatorControl
                     }
                     catch (Exception ex)
                     {
+                        Console.WriteLine($"❌ Erro ao iniciar {server.Id}/{emu.Name}: {ex.Message}");
                         allResults.Add(new { 
                             server = server.Id, 
                             emulator = emu.Name, 
@@ -355,22 +356,37 @@ namespace EmulatorControl
 
             foreach (var server in serversToStop)
             {   
-                // Parar em ordem reversa
                 var emuReversed = server.Emulators.AsEnumerable().Reverse().ToList();
                 
                 foreach (var emu in emuReversed)
                 {
                     try
                     {
-                        if (IsProcessRunning(emu.Process))
+                        if (IsProcessRunning(emu.Process, server.Path))
                         {
                             var processes = Process.GetProcessesByName(emu.Process);
+                            
                             foreach (var proc in processes)
                             {
-                                proc.Kill();
-                                proc.WaitForExit(5000);
+                                try
+                                {
+                                    string processPath = Path.GetDirectoryName(proc.MainModule.FileName);
+                                    
+                                    if (processPath != null && 
+                                        processPath.Equals(server.Path, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        proc.Kill();
+                                        proc.WaitForExit(5000);
+                                        Console.WriteLine($"✅ {server.Id}/{emu.Name} parado");
+                                    }
+                                }
+                                catch
+                                {
+                                    // Ignora erros de acesso
+                                    continue;
+                                }
                             }
-                            Console.WriteLine($"✅ {server.Id}/{emu.Name} parado");
+                            
                             allResults.Add(new { 
                                 server = server.Id, 
                                 emulator = emu.Name, 
@@ -423,19 +439,40 @@ namespace EmulatorControl
                     try
                     {
                         var processes = Process.GetProcessesByName(emu.Process);
-                        var isRunning = processes.Length > 0;
-                        
-                        if (isRunning)
+                        bool isRunning = false;
+                        Process matchingProcess = null;
+
+                        foreach (var proc in processes)
                         {
-                            var proc = processes[0];
+                            try
+                            {
+                                string processPath = Path.GetDirectoryName(proc.MainModule.FileName);
+                                
+                                if (processPath != null && 
+                                    processPath.Equals(server.Path, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    isRunning = true;
+                                    matchingProcess = proc;
+                                    break;
+                                }
+                            }
+                            catch
+                            {
+                                continue;
+                            }
+                        }
+                        
+                        if (isRunning && matchingProcess != null)
+                        {
                             serverEmulators.Add(new
                             {
                                 name = emu.Name,
                                 process = emu.Process,
                                 isRunning = true,
-                                pid = proc.Id,
-                                memoryMB = Math.Round(proc.WorkingSet64 / (1024.0 * 1024.0), 1),
-                                startTime = proc.StartTime
+                                pid = matchingProcess.Id,
+                                memoryMB = Math.Round(matchingProcess.WorkingSet64 / (1024.0 * 1024.0), 1),
+                                startTime = matchingProcess.StartTime,
+                                path = server.Path
                             });
                         }
                         else
@@ -444,7 +481,8 @@ namespace EmulatorControl
                             {
                                 name = emu.Name,
                                 process = emu.Process,
-                                isRunning = false
+                                isRunning = false,
+                                path = server.Path
                             });
                         }
                     }
@@ -455,7 +493,8 @@ namespace EmulatorControl
                             name = emu.Name,
                             process = emu.Process,
                             isRunning = false,
-                            error = ex.Message
+                            error = ex.Message,
+                            path = server.Path
                         });
                     }
                 }
@@ -503,8 +542,8 @@ namespace EmulatorControl
                 },
                 examples = new
                 {
-                    start_server1 = $"POST http://localhost:{config.Port}/start/server1",
-                    stop_server2 = $"POST http://localhost:{config.Port}/stop/server2",
+                    start_server1 = $"POST http://localhost:{config.Port}/start/s1",
+                    stop_server2 = $"POST http://localhost:{config.Port}/stop/s2",
                     status = $"GET http://localhost:{config.Port}/status"
                 }
             });
@@ -517,12 +556,31 @@ namespace EmulatorControl
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
         }
 
-        static bool IsProcessRunning(string processName)
+        static bool IsProcessRunning(string processName, string expectedPath)
         {
             try
             {
                 var processes = Process.GetProcessesByName(processName);
-                return processes.Length > 0;
+                
+                foreach (var proc in processes)
+                {
+                    try
+                    {
+                        string processPath = Path.GetDirectoryName(proc.MainModule.FileName);
+                        
+                        if (processPath != null && 
+                            processPath.Equals(expectedPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+                
+                return false;
             }
             catch
             {
