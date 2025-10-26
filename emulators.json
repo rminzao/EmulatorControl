@@ -1,0 +1,57 @@
+{
+  "port": 9090,
+  "servers": [
+    {
+      "id": "server1",
+      "name": "Servidor 1 - Principal",
+      "path": "C:\\EvoTank\\Emulador",
+      "enabled": true,
+      "emulators": [
+        {
+          "name": "Center",
+          "exe": "Center.service.exe",
+          "process": "Center.Service",
+          "delay": 3000
+        },
+        {
+          "name": "Fighting",
+          "exe": "Fighting.Service.exe",
+          "process": "Fighting.Service",
+          "delay": 15000
+        },
+        {
+          "name": "Road",
+          "exe": "Road.Service.exe",
+          "process": "Road.Service",
+          "delay": 0
+        }
+      ]
+    },
+    {
+      "id": "server2",
+      "name": "Servidor 2 - Secundário",
+      "path": "C:\\EvoTank\\Emulador2",
+      "enabled": true,
+      "emulators": [
+        {
+          "name": "Center",
+          "exe": "Center.service.exe",
+          "process": "Center.Service",
+          "delay": 3000
+        },
+        {
+          "name": "Fighting",
+          "exe": "Fighting.Service.exe",
+          "process": "Fighting.Service",
+          "delay": 15000
+        },
+        {
+          "name": "Road",
+          "exe": "Road.Service.exe",
+          "process": "Road.Service",
+          "delay": 0
+        }
+      ]
+    }
+  ]
+}

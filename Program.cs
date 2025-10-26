@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Security.Principal;
 using System.Text;
@@ -10,75 +11,142 @@ using System.Threading.Tasks;
 
 namespace EmulatorControl
 {
+    public class EmulatorConfig
+    {
+        public int Port { get; set; }
+        public List<ServerConfig> Servers { get; set; } = new();
+    }
+
+    public class ServerConfig
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Path { get; set; } = "";
+        public bool Enabled { get; set; }
+        public List<EmulatorInfo> Emulators { get; set; } = new();
+    }
+
+    public class EmulatorInfo
+    {
+        public string Name { get; set; } = "";
+        public string Exe { get; set; } = "";
+        public string Process { get; set; } = "";
+        public int Delay { get; set; }
+    }
+
     class Program
     {
-        private static readonly string EMULATOR_PATH = Environment.GetEnvironmentVariable("EMULATOR_PATH") 
-            ?? @"C:\v5500\Emulador";
-        
-        private static readonly int PORT = int.TryParse(Environment.GetEnvironmentVariable("EMULATOR_PORT"), out int port) 
-            ? port : 8989;
-        
+        private static EmulatorConfig config;
         private static HttpListener listener;
+        private static readonly string CONFIG_FILE = "emulators.json";
 
         static async Task Main(string[] args)
         {
-            Console.Title = "Emulator Control API - VPS";
+            Console.Title = "Emulator Control API - Multi Server VPS";
             
             // Verificar se está executando como Admin
             if (!IsRunningAsAdmin())
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("❌ ERRO: Execute este programa como Administrador!");
+                Console.WriteLine("ERRO: Execute este programa como Administrador!");
                 Console.WriteLine("Clique com botão direito -> 'Executar como administrador'");
                 Console.ReadKey();
                 return;
             }
 
-            // Verificar se a pasta dos emuladores existe
-            if (!Directory.Exists(EMULATOR_PATH))
+            // Carregar configuração
+            if (!LoadConfig())
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"❌ ERRO: Pasta não encontrada: {EMULATOR_PATH}");
-                Console.WriteLine();
-                Console.WriteLine("💡 Configure a variável de ambiente EMULATOR_PATH");
-                Console.WriteLine("   Exemplo: set EMULATOR_PATH=D:\\GameServer\\Emulators");
                 Console.ReadKey();
                 return;
             }
 
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("🎮 EMULATOR CONTROL API");
-            Console.WriteLine("=======================");
-            Console.WriteLine($"📁 Pasta: {EMULATOR_PATH}");
-            Console.WriteLine($"🌐 Porta: {PORT}");
+            Console.WriteLine("========================================");
+            Console.WriteLine($"🌐 Porta: {config.Port}");
             Console.WriteLine($"✅ Executando como Administrador");
-            
-            // Mostrar configuração de ambiente
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine();
-            Console.WriteLine("📋 Configuração:");
-            Console.WriteLine($"   EMULATOR_PATH = {EMULATOR_PATH}");
-            Console.WriteLine($"   EMULATOR_PORT = {PORT}");
             Console.WriteLine();
 
+            // Mostrar servidores configurados
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"📋 Servidores Configurados ({config.Servers.Count}):");
+            foreach (var server in config.Servers)
+            {
+                string status = server.Enabled ? "✅ Habilitado" : "⚠️  Desabilitado";
+                Console.WriteLine($"   [{server.Id}] {server.Name}");
+                Console.WriteLine($"      Pasta: {server.Path}");
+                Console.WriteLine($"      Status: {status}");
+                Console.WriteLine($"      Emuladores: {server.Emulators.Count}");
+                Console.WriteLine();
+            }
+
             await StartServer();
+        }
+
+        static bool LoadConfig()
+        {
+            try
+            {
+                if (!File.Exists(CONFIG_FILE))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"❌ ERRO: Arquivo {CONFIG_FILE} não encontrado!");
+                    Console.WriteLine();
+                    Console.WriteLine("Crie o arquivo emulators.json com a configuração dos servidores.");
+                    return false;
+                }
+
+                string json = File.ReadAllText(CONFIG_FILE);
+                config = JsonSerializer.Deserialize<EmulatorConfig>(json, new JsonSerializerOptions 
+                { 
+                    PropertyNameCaseInsensitive = true 
+                });
+
+                if (config == null || config.Servers.Count == 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    return false;
+                }
+
+                // Validar pastas
+                foreach (var server in config.Servers)
+                {
+                    if (server.Enabled && !Directory.Exists(server.Path))
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"⚠️  AVISO: Pasta não encontrada para {server.Name}: {server.Path}");
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"❌ Erro ao carregar configuração: {ex.Message}");
+                return false;
+            }
         }
 
         static async Task StartServer()
         {
             listener = new HttpListener();
-            listener.Prefixes.Add($"http://+:{PORT}/");
+            listener.Prefixes.Add($"http://+:{config.Port}/");
             
             try
             {
                 listener.Start();
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"🚀 Servidor iniciado em http://localhost:{PORT}");
+                Console.WriteLine($"🚀 Servidor iniciado em http://localhost:{config.Port}");
                 Console.WriteLine();
                 Console.WriteLine("Endpoints disponíveis:");
-                Console.WriteLine($"  POST http://localhost:{PORT}/start   - Iniciar emuladores");
-                Console.WriteLine($"  POST http://localhost:{PORT}/stop    - Parar emuladores");
-                Console.WriteLine($"  GET  http://localhost:{PORT}/status  - Ver status");
+                Console.WriteLine($"  POST http://localhost:{config.Port}/start/{{serverId}}  - Iniciar emuladores de um servidor");
+                Console.WriteLine($"  POST http://localhost:{config.Port}/start/all          - Iniciar TODOS os emuladores");
+                Console.WriteLine($"  POST http://localhost:{config.Port}/stop/{{serverId}}   - Parar emuladores de um servidor");
+                Console.WriteLine($"  POST http://localhost:{config.Port}/stop/all           - Parar TODOS os emuladores");
+                Console.WriteLine($"  GET  http://localhost:{config.Port}/status            - Ver status de todos");
+                Console.WriteLine($"  GET  http://localhost:{config.Port}/status/{{serverId}} - Ver status de um servidor");
                 Console.WriteLine();
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine("Aguardando comandos do painel... (Ctrl+C para sair)");
@@ -96,7 +164,7 @@ namespace EmulatorControl
                 Console.WriteLine($"❌ Erro ao iniciar servidor: {ex.Message}");
                 if (ex.Message.Contains("Access is denied"))
                 {
-                    Console.WriteLine("💡 Solução: Execute como Administrador ou libere a porta no firewall");
+                    Console.WriteLine("Execute como Administrador ou libere a porta no firewall");
                 }
                 Console.ReadKey();
             }
@@ -107,7 +175,7 @@ namespace EmulatorControl
             var request = context.Request;
             var response = context.Response;
             
-            // Configurar CORS para permitir requisições do painel PHP
+            // Configurar CORS
             response.Headers.Add("Access-Control-Allow-Origin", "*");
             response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
             response.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
@@ -118,25 +186,32 @@ namespace EmulatorControl
                 Console.WriteLine($"📥 {DateTime.Now:HH:mm:ss} - {request.HttpMethod} {request.Url.AbsolutePath}");
 
                 string responseText = "";
-                
-                switch (request.Url.AbsolutePath.ToLower())
+                string path = request.Url.AbsolutePath.ToLower();
+                string[] segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+                if (path == "/" || path == "")
                 {
-                    case "/start":
-                        responseText = await StartEmulators();
-                        break;
-                    case "/stop":
-                        responseText = StopEmulators();
-                        break;
-                    case "/status":
-                        responseText = GetStatus();
-                        break;
-                    case "/":
-                        responseText = GetHelp();
-                        break;
-                    default:
-                        response.StatusCode = 404;
-                        responseText = JsonSerializer.Serialize(new { error = "Endpoint não encontrado" });
-                        break;
+                    responseText = GetHelp();
+                }
+                else if (segments.Length >= 1 && segments[0] == "start")
+                {
+                    string serverId = segments.Length > 1 ? segments[1] : "all";
+                    responseText = await StartEmulators(serverId);
+                }
+                else if (segments.Length >= 1 && segments[0] == "stop")
+                {
+                    string serverId = segments.Length > 1 ? segments[1] : "all";
+                    responseText = StopEmulators(serverId);
+                }
+                else if (segments.Length >= 1 && segments[0] == "status")
+                {
+                    string serverId = segments.Length > 1 ? segments[1] : null;
+                    responseText = GetStatus(serverId);
+                }
+                else
+                {
+                    response.StatusCode = 404;
+                    responseText = JsonSerializer.Serialize(new { error = "Endpoint não encontrado" });
                 }
 
                 byte[] buffer = Encoding.UTF8.GetBytes(responseText);
@@ -147,8 +222,6 @@ namespace EmulatorControl
             catch (Exception ex)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"❌ Erro ao processar requisição: {ex.Message}");
-                
                 response.StatusCode = 500;
                 string errorResponse = JsonSerializer.Serialize(new { error = ex.Message });
                 byte[] buffer = Encoding.UTF8.GetBytes(errorResponse);
@@ -160,194 +233,280 @@ namespace EmulatorControl
             }
         }
 
-        static async Task<string> StartEmulators()
+        static async Task<string> StartEmulators(string serverId)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("🚀 Iniciando sequência de emuladores...");
-
-            var results = new List<object>();
-            var emulators = new[]
+            
+            List<ServerConfig> serversToStart;
+            
+            if (serverId == "all")
             {
-                new { Name = "Center", Exe = "Center.service.exe", Process = "Center.Service", Delay = 3000 },
-                new { Name = "Fighting", Exe = "Fighting.Service.exe", Process = "Fighting.Service", Delay = 15000 },
-                new { Name = "Road", Exe = "Road.Service.exe", Process = "Road.Service", Delay = 0 }
-            };
-
-            foreach (var emu in emulators)
+                serversToStart = config.Servers.Where(s => s.Enabled).ToList();
+            }
+            else
             {
-                try
+                var server = config.Servers.FirstOrDefault(s => s.Id == serverId);
+                if (server == null)
                 {
-                    // Verificar se já está rodando
-                    if (IsProcessRunning(emu.Process))
-                    {
-                        Console.WriteLine($"⚠️  {emu.Name} já está rodando");
-                        results.Add(new { emulator = emu.Name, status = "already_running" });
-                        continue;
-                    }
-
-                    // Iniciar emulador
-                    string exePath = Path.Combine(EMULATOR_PATH, emu.Exe);
-                    
-                    if (!File.Exists(exePath))
-                    {
-                        Console.WriteLine($"❌ {emu.Name} - Arquivo não encontrado: {exePath}");
-                        results.Add(new { emulator = emu.Name, status = "file_not_found" });
-                        continue;
-                    }
-
-                    var processInfo = new ProcessStartInfo
-                    {
-                        FileName = exePath,
-                        WorkingDirectory = EMULATOR_PATH,
-                        UseShellExecute = true,
-                        Verb = "runas" // Executar como admin
-                    };
-
-                    Process.Start(processInfo);
-                    Console.WriteLine($"✅ {emu.Name} iniciado");
-                    results.Add(new { emulator = emu.Name, status = "started" });
-
-                    // Aguardar delay
-                    if (emu.Delay > 0)
-                    {
-                        Console.WriteLine($"⏱️  Aguardando {emu.Delay/1000}s...");
-                        await Task.Delay(emu.Delay);
-                    }
+                    return JsonSerializer.Serialize(new { success = false, error = $"Servidor '{serverId}' não encontrado" });
                 }
-                catch (Exception ex)
+                if (!server.Enabled)
                 {
-                    Console.WriteLine($"❌ Erro ao iniciar {emu.Name}: {ex.Message}");
-                    results.Add(new { emulator = emu.Name, status = "error", message = ex.Message });
+                    return JsonSerializer.Serialize(new { success = false, error = $"Servidor '{serverId}' está desabilitado" });
                 }
+                serversToStart = new List<ServerConfig> { server };
             }
 
-            Console.WriteLine("🏁 Sequência concluída!");
-            return JsonSerializer.Serialize(new { success = true, message = "Sequência de inicialização concluída", results });
-        }
+            var allResults = new List<object>();
 
-        static string StopEmulators()
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("🛑 Parando emuladores...");
-
-            var results = new List<object>();
-            var processes = new[] { "Road.Service", "Fighting.Service", "Center.Service" }; // Ordem reversa
-
-            foreach (var processName in processes)
-            {
-                try
+            foreach (var server in serversToStart)
+            {   
+                foreach (var emu in server.Emulators)
                 {
-                    if (IsProcessRunning(processName))
+                    try
                     {
-                        var processes_found = Process.GetProcessesByName(processName);
-                        foreach (var proc in processes_found)
+                        // Verificar se já está rodando
+                        if (IsProcessRunning(emu.Process))
                         {
-                            proc.Kill();
-                            proc.WaitForExit(5000); // Aguarda 5s
+                            allResults.Add(new { 
+                                server = server.Id, 
+                                emulator = emu.Name, 
+                                status = "already_running" 
+                            });
+                            continue;
                         }
-                        Console.WriteLine($"✅ {processName} parado");
-                        results.Add(new { emulator = processName, status = "stopped" });
-                    }
-                    else
-                    {
-                        Console.WriteLine($"⚠️  {processName} não estava rodando");
-                        results.Add(new { emulator = processName, status = "not_running" });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"❌ Erro ao parar {processName}: {ex.Message}");
-                    results.Add(new { emulator = processName, status = "error", message = ex.Message });
-                }
-            }
 
-            Console.WriteLine("🏁 Todos os emuladores foram parados!");
-            return JsonSerializer.Serialize(new { success = true, message = "Emuladores parados", results });
-        }
-
-        static string GetStatus()
-        {
-            var status = new List<object>();
-            var emulators = new[]
-            {
-                new { Name = "Center", Process = "Center.Service" },
-                new { Name = "Fighting", Process = "Fighting.Service" },
-                new { Name = "Road", Process = "Road.Service" }
-            };
-
-            foreach (var emu in emulators)
-            {
-                try
-                {
-                    var processes = Process.GetProcessesByName(emu.Process);
-                    var isRunning = processes.Length > 0;
-                    
-                    if (isRunning)
-                    {
-                        var proc = processes[0];
-                        status.Add(new
+                        // Iniciar emulador
+                        string exePath = Path.Combine(server.Path, emu.Exe);
+                        
+                        if (!File.Exists(exePath))
                         {
-                            name = emu.Name,
-                            process = emu.Process,
-                            isRunning = true,
-                            pid = proc.Id,
-                            memoryMB = Math.Round(proc.WorkingSet64 / (1024.0 * 1024.0), 1),
-                            startTime = proc.StartTime
+                            allResults.Add(new { 
+                                server = server.Id, 
+                                emulator = emu.Name, 
+                                status = "file_not_found",
+                                path = exePath
+                            });
+                            continue;
+                        }
+
+                        var processInfo = new ProcessStartInfo
+                        {
+                            FileName = exePath,
+                            WorkingDirectory = server.Path,
+                            UseShellExecute = true,
+                            Verb = "runas"
+                        };
+
+                        Process.Start(processInfo);
+                        allResults.Add(new { 
+                            server = server.Id, 
+                            emulator = emu.Name, 
+                            status = "started" 
+                        });
+
+                        // Aguardar delay
+                        if (emu.Delay > 0)
+                        {
+                            Console.WriteLine($"⏱️  Aguardando {emu.Delay/1000}s...");
+                            await Task.Delay(emu.Delay);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        allResults.Add(new { 
+                            server = server.Id, 
+                            emulator = emu.Name, 
+                            status = "error", 
+                            message = ex.Message 
                         });
                     }
-                    else
-                    {
-                        status.Add(new
-                        {
-                            name = emu.Name,
-                            process = emu.Process,
-                            isRunning = false
-                        });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    status.Add(new
-                    {
-                        name = emu.Name,
-                        process = emu.Process,
-                        isRunning = false,
-                        error = ex.Message
-                    });
                 }
             }
 
             return JsonSerializer.Serialize(new { 
-                timestamp = DateTime.Now, 
-                emulators = status,
-                config = new {
-                    emulatorPath = EMULATOR_PATH,
-                    port = PORT
+                success = true, 
+                message = "Sequência de inicialização concluída", 
+                results = allResults 
+            });
+        }
+
+        static string StopEmulators(string serverId)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            
+            List<ServerConfig> serversToStop;
+            
+            if (serverId == "all")
+            {
+                serversToStop = config.Servers.Where(s => s.Enabled).ToList();
+            }
+            else
+            {
+                var server = config.Servers.FirstOrDefault(s => s.Id == serverId);
+                if (server == null)
+                {
+                    return JsonSerializer.Serialize(new { success = false, error = $"Servidor '{serverId}' não encontrado" });
                 }
+                serversToStop = new List<ServerConfig> { server };
+            }
+
+            var allResults = new List<object>();
+
+            foreach (var server in serversToStop)
+            {   
+                // Parar em ordem reversa
+                var emuReversed = server.Emulators.AsEnumerable().Reverse().ToList();
+                
+                foreach (var emu in emuReversed)
+                {
+                    try
+                    {
+                        if (IsProcessRunning(emu.Process))
+                        {
+                            var processes = Process.GetProcessesByName(emu.Process);
+                            foreach (var proc in processes)
+                            {
+                                proc.Kill();
+                                proc.WaitForExit(5000);
+                            }
+                            Console.WriteLine($"✅ {server.Id}/{emu.Name} parado");
+                            allResults.Add(new { 
+                                server = server.Id, 
+                                emulator = emu.Name, 
+                                status = "stopped" 
+                            });
+                        }
+                        else
+                        {
+                            Console.WriteLine($"⚠️  {server.Id}/{emu.Name} não estava rodando");
+                            allResults.Add(new { 
+                                server = server.Id, 
+                                emulator = emu.Name, 
+                                status = "not_running" 
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"❌ Erro ao parar {server.Id}/{emu.Name}: {ex.Message}");
+                        allResults.Add(new { 
+                            server = server.Id, 
+                            emulator = emu.Name, 
+                            status = "error", 
+                            message = ex.Message 
+                        });
+                    }
+                }
+            }
+            return JsonSerializer.Serialize(new { 
+                success = true, 
+                message = "Emuladores parados", 
+                results = allResults 
+            });
+        }
+
+        static string GetStatus(string serverId = null)
+        {
+            var allStatus = new List<object>();
+            
+            IEnumerable<ServerConfig> serversToCheck = serverId == null 
+                ? config.Servers 
+                : config.Servers.Where(s => s.Id == serverId);
+
+            foreach (var server in serversToCheck)
+            {
+                var serverEmulators = new List<object>();
+                
+                foreach (var emu in server.Emulators)
+                {
+                    try
+                    {
+                        var processes = Process.GetProcessesByName(emu.Process);
+                        var isRunning = processes.Length > 0;
+                        
+                        if (isRunning)
+                        {
+                            var proc = processes[0];
+                            serverEmulators.Add(new
+                            {
+                                name = emu.Name,
+                                process = emu.Process,
+                                isRunning = true,
+                                pid = proc.Id,
+                                memoryMB = Math.Round(proc.WorkingSet64 / (1024.0 * 1024.0), 1),
+                                startTime = proc.StartTime
+                            });
+                        }
+                        else
+                        {
+                            serverEmulators.Add(new
+                            {
+                                name = emu.Name,
+                                process = emu.Process,
+                                isRunning = false
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        serverEmulators.Add(new
+                        {
+                            name = emu.Name,
+                            process = emu.Process,
+                            isRunning = false,
+                            error = ex.Message
+                        });
+                    }
+                }
+
+                allStatus.Add(new
+                {
+                    serverId = server.Id,
+                    serverName = server.Name,
+                    serverPath = server.Path,
+                    enabled = server.Enabled,
+                    emulators = serverEmulators
+                });
+            }
+
+            return JsonSerializer.Serialize(new { 
+                timestamp = DateTime.Now,
+                servers = allStatus
             });
         }
 
         static string GetHelp()
         {
+            var serverList = config.Servers.Select(s => new { 
+                id = s.Id, 
+                name = s.Name, 
+                path = s.Path, 
+                enabled = s.Enabled,
+                emulators = s.Emulators.Count
+            }).ToList();
+
             return JsonSerializer.Serialize(new 
             { 
-                service = "Emulator Control API",
-                version = "1.1",
-                config = new {
-                    emulatorPath = EMULATOR_PATH,
-                    port = PORT,
-                    envVars = new {
-                        EMULATOR_PATH = "Caminho dos emuladores (padrão: C:\\v5500\\Emulador)",
-                        EMULATOR_PORT = "Porta da API (padrão: 8989)"
-                    }
-                },
+                service = "Emulator Control API - Multi Server",
+                version = "2.0",
+                port = config.Port,
+                servers = serverList,
                 endpoints = new 
                 {
-                    start = "POST /start - Iniciar emuladores em sequência",
-                    stop = "POST /stop - Parar todos os emuladores",
-                    status = "GET /status - Ver status atual"
+                    start_one = "POST /start/{serverId} - Iniciar emuladores de um servidor específico",
+                    start_all = "POST /start/all - Iniciar TODOS os emuladores de todos servidores",
+                    stop_one = "POST /stop/{serverId} - Parar emuladores de um servidor específico",
+                    stop_all = "POST /stop/all - Parar TODOS os emuladores",
+                    status_all = "GET /status - Ver status de todos os servidores",
+                    status_one = "GET /status/{serverId} - Ver status de um servidor específico"
                 },
-                sequence = "Center (3s) → Fighting (15s) → Road"
+                examples = new
+                {
+                    start_server1 = $"POST http://localhost:{config.Port}/start/server1",
+                    stop_server2 = $"POST http://localhost:{config.Port}/stop/server2",
+                    status = $"GET http://localhost:{config.Port}/status"
+                }
             });
         }
 
